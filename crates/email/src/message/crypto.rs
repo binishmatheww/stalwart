@@ -7,7 +7,7 @@
 use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use aes_gcm::{
     Aes256Gcm,
-    aead::{AeadInPlace, KeyInit, generic_array::GenericArray},
+    aead::{AeadInOut, KeyInit},
 };
 use chacha20poly1305::ChaCha20Poly1305;
 use common::auth::{
@@ -15,7 +15,7 @@ use common::auth::{
     ACCOUNT_FLAG_ENCRYPT_ALGO_CHACHA20_POLY1305, ACCOUNT_FLAG_ENCRYPT_APPEND,
     ACCOUNT_FLAG_ENCRYPT_METHOD_PGP, ACCOUNT_FLAG_ENCRYPT_TRAIN_SPAM_FILTER, EncryptionKeys,
 };
-use mail_builder::{encoders::base64::base64_encode_mime, mime::make_boundary};
+use mail_builder::{encoders::Base64Encoder, mime::make_boundary};
 use mail_parser::{Message, MimeHeaders, PartType};
 use openpgp::{
     parse::Parse,
@@ -332,9 +332,12 @@ impl EncryptMessage for Message<'_> {
                 )
                 .as_bytes(),
             );
-            base64_encode_mime(&pkcs7, &mut outer_message, false).map_err(|err| {
-                EncryptMessageError::Error(format!("Failed to base64 encode PKCS7: {}", err))
-            })?;
+            Base64Encoder::new()
+                .wrap_lines()
+                .encode_to_writer(&pkcs7, &mut outer_message)
+                .map_err(|err| {
+                    EncryptMessageError::Error(format!("Failed to base64 encode PKCS7: {}", err))
+                })?;
         }
 
         Ok(outer_message)
@@ -481,7 +484,11 @@ impl SymmetricCipher {
                 let cipher = Aes256Gcm::new_from_slice(key).expect("invalid key length");
                 let mut buffer = contents.to_vec();
                 let tag = cipher
-                    .encrypt_in_place_detached(GenericArray::from_slice(nonce), b"", &mut buffer)
+                    .encrypt_inout_detached(
+                        nonce.try_into().expect("invalid nonce length"),
+                        b"",
+                        buffer.as_mut_slice().into(),
+                    )
                     .expect("AES-GCM encryption failed");
                 (buffer, Some(tag.to_vec()))
             }
@@ -489,7 +496,11 @@ impl SymmetricCipher {
                 let cipher = ChaCha20Poly1305::new_from_slice(key).expect("invalid key length");
                 let mut buffer = contents.to_vec();
                 let tag = cipher
-                    .encrypt_in_place_detached(GenericArray::from_slice(nonce), b"", &mut buffer)
+                    .encrypt_inout_detached(
+                        nonce.try_into().expect("invalid nonce length"),
+                        b"",
+                        buffer.as_mut_slice().into(),
+                    )
                     .expect("ChaCha20-Poly1305 encryption failed");
                 (buffer, Some(tag.to_vec()))
             }

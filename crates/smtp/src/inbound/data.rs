@@ -9,15 +9,15 @@ use crate::{
     core::{Session, SessionAddress, State},
     inbound::{dkim::DkimSign, milter::Modification},
     queue::{
-        self, Message, MessageSource, MessageWrapper, QueueEnvelope, RCPT_SPAM_PAYLOAD,
-        quota::HasQueueQuota, spool::QueueParams,
+        self, Message, MessageSource, MessageWrapper, QueueEnvelope, RCPT_SPAM_MASK,
+        quota::HasQueueQuota, rcpt_spam_flag, spool::QueueParams,
     },
-    reporting::analysis::AnalyzeReport,
+    reporting::analysis::{AnalyzeReport, ReportData},
     scripts::ScriptResult,
 };
 use common::{
     config::{
-        mailstore::spamfilter::SpamFilterAction,
+        mailstore::spamfilter::{SpamFilterAction, spam_status},
         smtp::{
             auth::VerifyStrategy,
             queue::{QueueExpiry, QueueName},
@@ -42,7 +42,7 @@ use mail_auth::{
 use mail_builder::headers::{date::Date, message_id::generate_message_id_header};
 use mail_parser::{MessageParser, MimeHeaders, parsers::fields::thread::thread_name};
 use registry::schema::structs::Rate;
-use sieve::{SpamStatus, runtime::Variable};
+use sieve::runtime::Variable;
 use smtp_proto::{
     MAIL_BY_RETURN, RCPT_NOTIFY_DELAY, RCPT_NOTIFY_FAILURE, RCPT_NOTIFY_NEVER, RCPT_NOTIFY_SUCCESS,
 };
@@ -446,8 +446,14 @@ impl<T: SessionStream> Session<T> {
         };
 
         // Analyze reports
-        if is_report {
+        if is_report && ReportData::is_present(&parsed_message) {
             if !rc.analysis.forward {
+                self.data
+                    .rcpt_to
+                    .retain(|rcpt| !rc.analysis.is_report_address(rcpt.report_address()));
+            }
+
+            if self.data.rcpt_to.is_empty() {
                 self.server.analyze_report(
                     mail_parser::Message {
                         html_body: parsed_message.html_body,
@@ -524,7 +530,7 @@ impl<T: SessionStream> Session<T> {
 
         // Run SPAM filter
         let mut train_spam = None;
-        let mut spam_status = None;
+        let mut spam_result = None;
         if self.server.core.spam.enabled
             && self
                 .server
@@ -552,19 +558,15 @@ impl<T: SessionStream> Session<T> {
                             thread_name(parsed_message.subject().unwrap_or_default()).to_string(),
                         )
                     });
-                    spam_status = Some(if score.is_spam {
-                        SpamStatus::Spam
-                    } else {
-                        SpamStatus::Ham
-                    });
+                    let scores = &self.server.core.spam.scores;
+                    spam_result = Some((score.score, scores.spam_percentage(score.score)));
 
                     // Add scores for local recipients
-                    for (is_spam, recipient) in
+                    for (user_score, recipient) in
                         score.results.into_iter().zip(self.data.rcpt_to.iter_mut())
                     {
-                        if is_spam {
-                            recipient.flags |= RCPT_SPAM_PAYLOAD;
-                        }
+                        recipient.flags = (recipient.flags & !RCPT_SPAM_MASK)
+                            | rcpt_spam_flag(scores.spam_percentage(user_score));
                     }
                 }
                 SpamFilterAction::Discard => {
@@ -650,8 +652,11 @@ impl<T: SessionStream> Session<T> {
             let mut params = self
                 .build_script_parameters("data")
                 .with_auth_headers(&headers);
-            if let Some(spam_status) = spam_status {
-                params = params.with_spam_status(spam_status);
+            if let Some((score, percentage)) = spam_result {
+                params = params
+                    .with_spam_status(spam_status(Some(percentage)))
+                    .set_variable("spam.score", score as f64)
+                    .set_variable("spam.is_spam", self.server.core.spam.scores.is_spam(score));
             }
             let params = params
                 .set_variable(
@@ -738,8 +743,25 @@ impl<T: SessionStream> Session<T> {
         // Build message
         let mail_from = self.data.mail_from.clone().unwrap();
         let rcpt_to = std::mem::take(&mut self.data.rcpt_to);
+        let source = if !self.is_authenticated() {
+            let dmarc_pass = dmarc_result.is_some_and(|result| result == DmarcResult::Pass);
+
+            #[cfg(feature = "test_mode")]
+            {
+                MessageSource::Unauthenticated {
+                    dmarc_pass: dmarc_pass || mail_from.address.starts_with("dmarc-"),
+                }
+            }
+
+            #[cfg(not(feature = "test_mode"))]
+            {
+                MessageSource::Unauthenticated { dmarc_pass }
+            }
+        } else {
+            MessageSource::Authenticated
+        };
         let mut message = self
-            .build_message(mail_from, rcpt_to, message_id, self.data.session_id)
+            .build_message(mail_from, rcpt_to, source, message_id, self.data.session_id)
             .await;
 
         // Add Return-Path
@@ -787,34 +809,14 @@ impl<T: SessionStream> Session<T> {
         if let Some(metadata) = self.server.has_quota(&mut message).await {
             // Queue message
             let queue_id = message.queue_id;
-            let source = if !self.is_authenticated() {
-                let dmarc_pass = dmarc_result.is_some_and(|result| result == DmarcResult::Pass);
-
-                #[cfg(feature = "test_mode")]
-                {
-                    MessageSource::Unauthenticated {
-                        dmarc_pass: dmarc_pass || message.message.return_path.starts_with("dmarc-"),
-                        train_spam,
-                    }
-                }
-
-                #[cfg(not(feature = "test_mode"))]
-                {
-                    MessageSource::Unauthenticated {
-                        dmarc_pass,
-                        train_spam,
-                    }
-                }
-            } else {
-                MessageSource::Authenticated
-            };
             let dkim_signers = self
                 .server
                 .eval_signers(&ac.dkim.sign, self, self.data.session_id)
                 .await;
             if message
                 .queue(
-                    QueueParams::new(raw_message, self.data.session_id, &self.server, source)
+                    QueueParams::new(raw_message, self.data.session_id, &self.server)
+                        .with_train_spam(train_spam)
                         .with_raw_headers(&headers)
                         .with_dkim_signers(dkim_signers)
                         .with_original_raw_message(original_message)
@@ -840,6 +842,7 @@ impl<T: SessionStream> Session<T> {
         &self,
         mail_from: SessionAddress,
         mut rcpt_to: Vec<SessionAddress>,
+        source: MessageSource,
         queue_id: u64,
         span_id: u64,
     ) -> MessageWrapper {
@@ -854,7 +857,7 @@ impl<T: SessionStream> Session<T> {
                 .to_lowercase_address(false)
                 .into_boxed_str(),
             recipients: Vec::with_capacity(rcpt_to.len()),
-            flags: mail_from.flags,
+            flags: mail_from.flags | source.flags(),
             priority: self.data.priority,
             size: 0,
             env_id: mail_from.dsn_info.map(|i| i.into_boxed_str()),
@@ -974,39 +977,41 @@ impl<T: SessionStream> Session<T> {
         }
     }
 
-    pub async fn can_send_data(&mut self) -> Result<bool, ()> {
-        if !self.data.rcpt_to.is_empty() {
-            if self.data.messages_sent
-                < self
-                    .server
-                    .eval_if(
-                        &self.server.core.smtp.session.data.max_messages,
-                        self,
-                        self.data.session_id,
-                    )
-                    .await
-                    .unwrap_or(10)
-            {
-                Ok(true)
-            } else {
-                trc::event!(
-                    Smtp(SmtpEvent::TooManyMessages),
-                    SpanId = self.data.session_id,
-                    Limit = self.data.messages_sent
-                );
+    pub async fn can_send_data(&mut self) -> Option<&'static [u8]> {
+        if self.data.mail_from.is_none() {
+            trc::event!(
+                Smtp(SmtpEvent::MailFromMissing),
+                SpanId = self.data.session_id,
+            );
 
-                self.write(b"452 4.4.5 Maximum number of messages per session exceeded.\r\n")
-                    .await?;
-                Ok(false)
-            }
-        } else {
+            Some(b"503 5.5.1 MAIL is required first.\r\n")
+        } else if self.data.rcpt_to.is_empty() {
             trc::event!(
                 Smtp(SmtpEvent::RcptToMissing),
                 SpanId = self.data.session_id,
             );
 
-            self.write(b"503 5.5.1 RCPT is required first.\r\n").await?;
-            Ok(false)
+            Some(b"503 5.5.1 RCPT is required first.\r\n")
+        } else if self.data.messages_sent
+            < self
+                .server
+                .eval_if(
+                    &self.server.core.smtp.session.data.max_messages,
+                    self,
+                    self.data.session_id,
+                )
+                .await
+                .unwrap_or(10)
+        {
+            None
+        } else {
+            trc::event!(
+                Smtp(SmtpEvent::TooManyMessages),
+                SpanId = self.data.session_id,
+                Limit = self.data.messages_sent
+            );
+
+            Some(b"452 4.4.5 Maximum number of messages per session exceeded.\r\n")
         }
     }
 

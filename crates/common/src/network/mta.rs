@@ -38,7 +38,12 @@ use trc::{AddContext, SpamEvent};
 use types::id::Id;
 
 impl Server {
-    pub async fn rcpt_resolve(&self, rcpt: &str, session_id: u64) -> trc::Result<RcptResolution> {
+    pub async fn rcpt_resolve(
+        &self,
+        rcpt: &str,
+        allow_catch_all: bool,
+        session_id: u64,
+    ) -> trc::Result<RcptResolution> {
         // Obtain domain settings
         let Some((local_part, domain_part)) = rcpt.rsplit_once('@') else {
             return Ok(RcptResolution::UnknownDomain);
@@ -172,8 +177,15 @@ impl Server {
         }
 
         // Catch-all resolution
-        if let Some(catch_all) = &domain.catch_all {
-            return Ok(RcptResolution::Rewrite(catch_all.to_string()));
+        if allow_catch_all && let Some(catch_all) = &domain.catch_all {
+            return Ok(
+                match Box::pin(self.rcpt_resolve(catch_all, false, session_id)).await? {
+                    resolution @ (RcptResolution::Expand(_) | RcptResolution::Rewrite(_)) => {
+                        resolution
+                    }
+                    _ => RcptResolution::Rewrite(catch_all.to_string()),
+                },
+            );
         }
 
         // Verify whether domain relaying is enabled
@@ -203,7 +215,7 @@ impl Server {
     }
 
     pub fn get_trusted_sieve_script(&self, name: &str, session_id: u64) -> Option<&Arc<Sieve>> {
-        self.core.sieve.trusted_scripts.get(name).or_else(|| {
+        self.core.sieve.trusted_script(name).or_else(|| {
             trc::event!(
                 Sieve(trc::SieveEvent::ScriptNotFound),
                 Id = name.to_string(),
@@ -215,7 +227,7 @@ impl Server {
     }
 
     pub fn get_untrusted_sieve_script(&self, name: &str, session_id: u64) -> Option<&Arc<Sieve>> {
-        self.core.sieve.untrusted_scripts.get(name).or_else(|| {
+        self.core.sieve.untrusted_script(name).or_else(|| {
             trc::event!(
                 Sieve(trc::SieveEvent::ScriptNotFound),
                 Id = name.to_string(),

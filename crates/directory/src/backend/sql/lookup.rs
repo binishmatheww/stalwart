@@ -22,6 +22,12 @@ impl SqlDirectory {
                     .details("Unsupported credentials type for SQL authentication"));
             }
         };
+        if secret.is_empty() {
+            return Err(trc::AuthEvent::Failed
+                .into_err()
+                .details("Empty secret rejected")
+                .ctx(trc::Key::AccountName, username.to_string()));
+        }
 
         let Recipient::Account(mut account) = self.mappings.row_to_account(
             self.sql_store
@@ -163,7 +169,9 @@ impl SqlMappings {
                         account.email = email;
                     }
                 } else if name.eq_ignore_ascii_case(&self.column_secret) {
-                    if let Value::Text(text) = value {
+                    if let Value::Text(text) = value
+                        && !text.is_empty()
+                    {
                         account.secret = Some(text.into_owned());
                     }
                 } else if let Some(column_type) = &self.column_type
@@ -173,6 +181,7 @@ impl SqlMappings {
                 } else if let Some(column_description) = &self.column_description
                     && name.eq_ignore_ascii_case(column_description)
                     && let Value::Text(text) = value
+                    && !text.is_empty()
                 {
                     account.description = Some(text.into_owned());
                 }

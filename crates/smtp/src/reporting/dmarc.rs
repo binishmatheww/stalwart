@@ -19,7 +19,7 @@ use common::{
 use compact_str::ToCompactString;
 use mail_auth::{
     ArcOutput, AuthenticatedMessage, AuthenticationResults, DkimOutput, DkimResult, DmarcOutput,
-    SpfResult,
+    DmarcResult, SpfResult,
     common::verify::VerifySignature,
     dkim2::Dkim2Output,
     dmarc::{self},
@@ -33,7 +33,7 @@ use registry::{
     },
     types::{EnumImpl, ObjectImpl, datetime::UTCDateTime, map::Map},
 };
-use std::future::Future;
+use std::{borrow::Cow, future::Future};
 use store::{
     SerializeInfallible, U64_LEN, ValueKey,
     registry::ObjectIdVersioned,
@@ -56,6 +56,14 @@ impl<T: SessionStream> Session<T> {
     ) {
         let dmarc_record = dmarc_output.dmarc_record_cloned().unwrap();
         let config = &self.server.core.smtp.report.dmarc;
+
+        if self
+            .server
+            .is_local_report_domain(dmarc_output.domain(), self.data.session_id)
+            .await
+        {
+            return;
+        }
 
         // Send failure report. RFC 9991 Section 2: report generators MUST NOT
         // honor "ruf" for policy records published with "psd=y".
@@ -135,8 +143,11 @@ impl<T: SessionStream> Session<T> {
                     .with_authentication_results(auth_results.to_string())
                     .with_headers(std::str::from_utf8(message.raw_headers()).unwrap_or_default());
 
+                let dkim_aligned = matches!(dmarc_output.dkim_result(), DmarcResult::Pass);
+                let spf_aligned = matches!(dmarc_output.spf_result(), DmarcResult::Pass);
+
                 // Report the first failed signature
-                let dkim_failed = if let (
+                if let (
                     dmarc::Report::Dkim
                     | dmarc::Report::DkimSpf
                     | dmarc::Report::All
@@ -144,26 +155,30 @@ impl<T: SessionStream> Session<T> {
                     Some(signature),
                 ) = (
                     &report_options,
-                    dkim_output.iter().find_map(|o| {
-                        let s = o.signature()?;
-                        if !matches!(o.result(), DkimResult::Pass) {
-                            Some(s)
-                        } else {
-                            None
-                        }
-                    }),
+                    if !dkim_aligned {
+                        dkim_output
+                            .iter()
+                            .find_map(|o| {
+                                let s = o.signature()?;
+                                if !matches!(o.result(), DkimResult::Pass) {
+                                    Some(s)
+                                } else {
+                                    None
+                                }
+                            })
+                            .or_else(|| dkim_output.iter().find_map(|o| o.signature()))
+                    } else {
+                        None
+                    },
                 ) {
                     auth_failure = auth_failure
                         .with_dkim_domain(signature.domain())
                         .with_dkim_selector(signature.selector())
                         .with_dkim_identity(signature.identity());
-                    true
-                } else {
-                    false
-                };
+                }
 
                 // Report SPF failure
-                let spf_failed = if let (
+                if let (
                     dmarc::Report::Spf
                     | dmarc::Report::DkimSpf
                     | dmarc::Report::All
@@ -171,40 +186,42 @@ impl<T: SessionStream> Session<T> {
                     Some(output),
                 ) = (
                     &report_options,
-                    self.data
-                        .spf_ehlo
-                        .as_ref()
-                        .and_then(|s| {
-                            if s.result() != SpfResult::Pass {
-                                s.into()
-                            } else {
-                                None
-                            }
-                        })
-                        .or_else(|| {
-                            self.data.spf_mail_from.as_ref().and_then(|s| {
+                    if !spf_aligned {
+                        self.data
+                            .spf_ehlo
+                            .as_ref()
+                            .and_then(|s| {
                                 if s.result() != SpfResult::Pass {
                                     s.into()
                                 } else {
                                     None
                                 }
                             })
-                        }),
+                            .or_else(|| {
+                                self.data.spf_mail_from.as_ref().and_then(|s| {
+                                    if s.result() != SpfResult::Pass {
+                                        s.into()
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .or(self.data.spf_mail_from.as_ref())
+                    } else {
+                        None
+                    },
                 ) {
                     auth_failure =
                         auth_failure.with_spf_dns(format!("txt : {} : v=SPF1", output.domain()));
                     // TODO use DNS record
-                    true
-                } else {
-                    false
-                };
+                }
 
                 auth_failure
-                    .with_identity_alignment(match (dkim_failed, spf_failed) {
-                        (true, true) => IdentityAlignment::DkimSpf,
-                        (true, false) => IdentityAlignment::Dkim,
-                        (false, true) => IdentityAlignment::Spf,
-                        (false, false) => IdentityAlignment::None,
+                    .with_identity_alignment(match (dkim_aligned, spf_aligned) {
+                        (false, false) => IdentityAlignment::DkimSpf,
+                        (false, true) => IdentityAlignment::Dkim,
+                        (true, false) => IdentityAlignment::Spf,
+                        (true, true) => IdentityAlignment::None,
                     })
                     .write_rfc5322(
                         (
@@ -273,19 +290,29 @@ impl<T: SessionStream> Session<T> {
             return;
         }
 
+        // Report the same identifier forms that were used for alignment
+        let message_from = message.from();
+        let header_from = message_from.domain_part();
+        let header_from = header_from
+            .to_ascii_domain()
+            .unwrap_or(Cow::Borrowed(header_from));
+        let envelope_from = self
+            .data
+            .mail_from
+            .as_ref()
+            .map(|mf| mf.domain.as_str())
+            .unwrap_or_else(|| self.data.helo_domain.as_str());
+        let envelope_from = envelope_from
+            .to_ascii_domain()
+            .unwrap_or(Cow::Borrowed(envelope_from));
+
         // Create DMARC report record
         let mut report_record = Record::new()
             .with_dmarc_output(&dmarc_output)
             .with_dkim_output(dkim_output)
             .with_source_ip(self.data.remote_ip)
-            .with_header_from(message.from().domain_part())
-            .with_envelope_from(
-                self.data
-                    .mail_from
-                    .as_ref()
-                    .map(|mf| mf.domain.as_str())
-                    .unwrap_or_else(|| self.data.helo_domain.as_str()),
-            );
+            .with_header_from(header_from.as_ref())
+            .with_envelope_from(envelope_from.as_ref());
         if let Some(dkim2_output) = dkim2_output {
             report_record = report_record.with_dkim2_output(dkim2_output);
         }

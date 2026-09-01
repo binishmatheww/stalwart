@@ -92,6 +92,8 @@ pub struct AddressBook {
     pub max_address_books: Option<u64>,
     #[serde(rename = "maxContacts")]
     pub max_contacts: Option<u64>,
+    #[serde(rename = "vCardVersion")]
+    pub v_card_version: VCardVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +230,8 @@ pub struct Application {
     pub auto_update_frequency: Duration,
     #[serde(rename = "unpackDirectory")]
     pub unpack_directory: Option<String>,
+    #[serde(rename = "oauthClientId")]
+    pub oauth_client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2722,6 +2726,8 @@ pub struct Domain {
     pub allow_relaying: bool,
     #[serde(rename = "reportAddressUri")]
     pub report_address_uri: Option<String>,
+    #[serde(rename = "allowScimProvisioning")]
+    pub allow_scim_provisioning: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2951,6 +2957,8 @@ pub struct GroupAccount {
     pub locale: Locale,
     #[serde(rename = "timeZone")]
     pub time_zone: Option<TimeZone>,
+    #[serde(rename = "externalId")]
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3102,6 +3110,14 @@ pub struct Imap {
     pub timeout_authenticated: Duration,
     #[serde(rename = "timeoutIdle")]
     pub timeout_idle: Duration,
+    #[serde(rename = "maxMessagesPerCommand")]
+    pub max_messages_per_command: u64,
+    #[serde(rename = "minUidBatchSize")]
+    pub min_uid_batch_size: u64,
+    #[serde(rename = "maxUidBatches")]
+    pub max_uid_batches: u64,
+    #[serde(rename = "maxMessagesPerSave")]
+    pub max_messages_per_save: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4236,6 +4252,22 @@ pub struct PublicKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "@type")]
+pub enum PublicStringOptional {
+    None,
+    Value(PublicStringValue),
+    EnvironmentVariable(SecretKeyEnvironmentVariable),
+    File(SecretKeyFile),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PublicStringValue {
+    #[serde(rename = "value")]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "@type")]
 pub enum PublicText {
     Text(PublicTextValue),
     EnvironmentVariable(SecretKeyEnvironmentVariable),
@@ -4428,6 +4460,8 @@ pub struct ReportSettings {
     pub outbound_report_domain: Option<String>,
     #[serde(rename = "outboundReportSubmitter")]
     pub outbound_report_submitter: Expression,
+    #[serde(rename = "inboundReportMaxSize")]
+    pub inbound_report_max_size: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4441,6 +4475,8 @@ pub struct RocksDbStore {
     pub buffer_size: u64,
     #[serde(rename = "poolWorkers")]
     pub pool_workers: Option<u64>,
+    #[serde(rename = "cacheSize")]
+    pub cache_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4473,7 +4509,7 @@ pub struct S3Store {
     #[serde(rename = "bucket")]
     pub bucket: String,
     #[serde(rename = "accessKey")]
-    pub access_key: Option<String>,
+    pub access_key: PublicStringOptional,
     #[serde(rename = "secretKey")]
     pub secret_key: SecretKeyOptional,
     #[serde(rename = "securityToken")]
@@ -6179,6 +6215,8 @@ pub struct UserAccount {
     pub quotas: VecMap<StorageQuota, u64>,
     #[serde(rename = "aliases")]
     pub aliases: List<EmailAlias>,
+    #[serde(rename = "externalId")]
+    pub external_id: Option<String>,
     #[serde(rename = "description")]
     pub description: Option<String>,
     #[serde(rename = "locale")]

@@ -33,12 +33,10 @@ pub(super) async fn send_mta_hook_request(
             .map_err(|err| format!("Failed to serialize Hook request: {}", err))?
     };
 
-    let response = reqwest::Client::builder()
-        .timeout(mta_hook.timeout)
-        .danger_accept_invalid_certs(mta_hook.tls_allow_invalid_certs)
-        .build()
-        .map_err(|err| format!("Failed to create HTTP client: {}", err))?
+    let response = mta_hook
+        .client
         .post(&mta_hook.url)
+        .timeout(mta_hook.timeout)
         .headers(headers)
         .body(body)
         .send()

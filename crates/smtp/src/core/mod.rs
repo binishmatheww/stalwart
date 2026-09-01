@@ -43,7 +43,7 @@ pub enum State {
     Bdat(BdatReceiver),
     Data(DataReceiver),
     Sasl(LineReceiver<SaslToken>),
-    DataTooLarge(DummyDataReceiver),
+    SkipData(DummyDataReceiver, &'static [u8]),
     RequestTooLarge(DummyLineReceiver),
     Accepted(QueueId),
     None,
@@ -304,5 +304,12 @@ impl SessionAddress {
             flags: 0,
             dsn_info: None,
         }
+    }
+
+    pub fn report_address(&self) -> &str {
+        self.dsn_info
+            .as_ref()
+            .and_then(|v| v.strip_prefix("rfc822;"))
+            .unwrap_or(&self.address_lcase)
     }
 }

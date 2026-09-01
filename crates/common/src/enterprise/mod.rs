@@ -44,7 +44,7 @@ pub struct Enterprise {
     pub spam_filter_llm: Option<SpamFilterLlmConfig>,
     pub template_calendar_alarm: Option<Template<CalendarTemplateVariable>>,
     pub template_scheduling_email: Option<Template<CalendarTemplateVariable>>,
-    pub template_scheduling_web: Option<Template<CalendarTemplateVariable>>,
+    pub template_scheduling_web: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,10 +203,10 @@ impl Server {
 
         let mut logo = None;
         if let Some(logo_url) = logo_url {
-            let response = reqwest::Client::builder()
+            let response = utils::http::http_client_builder(false)
                 .user_agent(USER_AGENT)
                 .build()
-                .unwrap()
+                .unwrap_or_default()
                 .get(logo_url.as_str())
                 .send()
                 .await

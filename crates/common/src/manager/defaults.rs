@@ -19,17 +19,21 @@ use registry::{
 };
 use std::str::FromStr;
 use store::{
-    rand::{Rng, distr::Alphanumeric, rng},
+    rand::{RngExt, distr::Alphanumeric, rng},
     registry::{
         bootstrap::Bootstrap,
         write::{RegistryWrite, RegistryWriteResult},
     },
 };
 
-pub const ASN_IPV4: &str = "https://cdn.jsdelivr.net/npm/@ip-location-db/asn/asn-ipv4.csv";
-pub const ASN_IPV6: &str = "https://cdn.jsdelivr.net/npm/@ip-location-db/asn/asn-ipv6.csv";
-pub const GEO_IPV4: &str = "https://cdn.jsdelivr.net/npm/@ip-location-db/geolite2-geo-whois-asn-country/geolite2-geo-whois-asn-country-ipv4.csv";
-pub const GEO_IPV6: &str = "https://cdn.jsdelivr.net/npm/@ip-location-db/geolite2-geo-whois-asn-country/geolite2-geo-whois-asn-country-ipv6.csv";
+pub const ASN_IPV4: &str =
+    "https://github.com/sapics/ip-location-db/releases/download/latest/origin-asn-ipv4.csv";
+pub const ASN_IPV6: &str =
+    "https://github.com/sapics/ip-location-db/releases/download/latest/origin-asn-ipv6.csv";
+pub const GEO_IPV4: &str =
+    "https://github.com/sapics/ip-location-db/releases/download/latest/user-country-ipv4.csv";
+pub const GEO_IPV6: &str =
+    "https://github.com/sapics/ip-location-db/releases/download/latest/user-country-ipv6.csv";
 
 pub trait BootstrapDefaults {
     fn insert_safe_defaults(&mut self) -> impl Future<Output = ()> + Send;
@@ -51,9 +55,7 @@ async fn insert_safe_defaults(bp: &mut Bootstrap) -> trc::Result<()> {
     let is_bootstrap_mode = bp.registry.is_bootstrap_mode();
 
     #[cfg(not(feature = "test_mode"))]
-    if (!is_recovery_mode || is_bootstrap_mode)
-        && bp.registry.count_object(ObjectType::Application).await? == 0
-    {
+    if bp.registry.count_object(ObjectType::Application).await? == 0 {
         bp.registry
             .write(RegistryWrite::insert(
                 &Application {
@@ -67,6 +69,7 @@ async fn insert_safe_defaults(bp: &mut Bootstrap) -> trc::Result<()> {
                     #[cfg(feature = "dev_mode")]
                     resource_url: "file:///Users/me/code/webui/.ignore/webui.zip".into(),
                     unpack_directory: None,
+                    oauth_client_id: None,
                     url_prefix: Map::new(vec!["/admin".into(), "/account".into()]),
                 }
                 .into(),
