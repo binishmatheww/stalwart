@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [0.16.23] - 2026-09-21
+
+If you are upgrading from v0.16.x, replace the binary (or run `docker pull`). If you are upgrading from v0.15.x and below, please read the [upgrading documentation](https://github.com/stalwartlabs/stalwart/blob/main/UPGRADING/v0_16.md) for more information on how to upgrade from previous versions.
+
+## Added
+- Expressions: `bit_and` function.
+
+## Changed
+
+## Fixed
+- MTA: 
+  - A mailing list whose recipients include another mailing list is accepted at `RCPT TO` and then rejected at local delivery with `550 5.5.0 Mailbox not found`.
+  - DMARC aggregate reports carry two `spf` elements per record and the `version` element of a DMARC aggregate report is written as `1` instead of `1.0`.
+  - DSNs generated for an alias rewrite or a list expansion emit a doubled `addr-type` in `Original-Recipient` (`rfc822;rfc822;user@example.org`).
+  - DSNs that cannot be written to the store are discarded, the recipients are flagged as notified and the original message is removed from the queue, losing both the bounce and the message.
+- POP3:
+  - `TOP msg n` counts the `n` lines from the first byte of the message instead of from the first byte of the body.
+  - A message whose very first line begins with `.` is not byte-stuffed.
+- Spam filter: Moving or copying a message from one account into another creates no training sample, so the classifier never learns from it.
+- Sieve: `envelope "orcpt"` yields the bare address for an `ORCPT` supplied over SMTP. It now carries the `addr-type` prefix in every case, as required by RFC 6009.
+- ACME: The `_acme-challenge` TXT records published for a DNS-01 authorization are never removed.
+- DNS: The DNSSEC resolver queries a single nameserver at a time, working around a `hickory-resolver` race that cancels the TCP retry when two nameservers return a truncated response in parallel.
+- Troubleshoot tool:
+  - MX records are resolved through the DNSSEC-validating resolver, matching the resolver used by the delivery path.
+  - A TLSA lookup that fails or returns bogus records stops the delivery attempt for that host, instead of continuing without DANE.
+- OIDC: Bearer tokens that carry no `email`, `preferred_username` or `upn` claim are always authenticated against the default directory.
+- Meilisearch: A confirmation timeout is treated as a failed write even when `failOnTimeout` is disabled, so an index whose batches take longer than `pollInterval` x `maxRetries` never completes an indexing task and resubmits the same batch indefinitely.
+- WebUI: A failed update no longer takes an `Application` offline.
+- FoundationDB: The cached read version is invalidated when any broadcast is received from another node.
+- Redis:
+  - On a cluster, the rate limiter and the blob upload quota issue `INCR` and `EXPIRE` as a `MULTI`/`EXEC` transaction, whose `MOVED` redirects collapse into a single `EXECABORT` that never refreshes the slot map.
+  - A connection that fails because it is addressing the wrong server is returned to the pool and reused, since the recycle check only issues `PING`.
+
+## [0.16.22] - 2026-09-13
+
+If you are upgrading from v0.16.x, replace the binary (or run `docker pull`). If you are upgrading from v0.15.x and below, please read the [upgrading documentation](https://github.com/stalwartlabs/stalwart/blob/main/UPGRADING/v0_16.md) for more information on how to upgrade from previous versions.
+
+## Added
+
+## Changed
+
+## Fixed
+- WebDAV: `PROPFIND` responses do not declare the namespace of every requested property on the `DAV:multistatus` element.
+- MTA: 
+  - SMTP session state obtained before `STARTTLS` is discarded once the TLS handshake completes, as required by RFC 3207.
+  - Inbound throttle, outbound throttle and queue quota `match` expressions evaluate their `if`/`then` conditions.
+  - DMARC: Messages without an aligned SPF or DKIM pass from a domain that publishes a DMARC policy are reported as `fail` instead of `none` in logs.
+  - DMARC: A temporary DNS error on an SPF or DKIM check whose identifier aligns with the author domain produces `temperror` instead of `fail`.
+  - DMARC: A policy record without a `p` tag is only applied, as `p=none`, when it contains a `rua` tag, even if it declares `sp` or `np`.
+- iMIP: Notification subjects and bodies omit the event start date, time and timezone for recurring events.
+- OIDC: Discovery is retried for 30 seconds before the directory is marked as unavailable, so a provider that is still starting up no longer requires a restart.
+- WebUI: The cached bundle of an `Application` is discarded when its `resourceUrl` changes or the record is deleted, so the next unpack fetches the new resource.
+- DNS: Append `.` to MX record hostnames.
+- Recovery mode: Automatic IP banning is disabled during recovery and initial setup.
+- FoundationDB: The cached read version is invalidated when a queue refresh or registry change broadcast is received.
+- Sieve: Messages filed with `fileinto` by a user script are treated as ham and are no longer moved to Junk when classified as spam.
+- IMAP:
+  - `SELECT`, `EXAMINE` and `STATUS` on a shared mailbox require the `r` (read) right.
+  - `AUTHENTICATE` is refused on clear-text connections unless `allowPlainTextAuth` is enabled, and the greeting and `CAPABILITY` response advertise `LOGINDISABLED` instead of the `AUTH=` mechanisms in that case.
+- IMAP, POP3, ManageSieve: Partial commands received before `STARTTLS` or `STLS` are discarded once the TLS handshake completes.
+- Network: Inbound TLS handshakes, both implicit and `STARTTLS`, are aborted after the listener's `tlsTimeout`, releasing the connection slot.
+- OAuth: A random key is used when the OIDC provider's `encryptionKey` or HMAC `signatureKey` cannot be read, instead of an empty key.
+- LDAP: The `{local}` and `{domain}` filter placeholders are escaped.
+- JMAP:
+  - `CalendarEvent/set` stores `useDefaultAlerts` per user, and `CalendarEvent/get` returns `false` when it was never set.
+  - `CalendarEvent/get` returns `null` for `baseEventId` unless the id is a synthetic recurrence instance.
+  - `CalendarEvent/get` returns `null` for requested `recurrenceRule` and `recurrenceOverrides` properties on synthetic recurrence instances.
+  - `CalendarEvent/get` and `ContactCard/get` return only `id` when the `properties` argument is an empty list, instead of every property.
+
 ## [0.16.21] - 2026-09-06
 
 If you are upgrading from v0.16.x, replace the binary (or run `docker pull`). If you are upgrading from v0.15.x and below, please read the [upgrading documentation](https://github.com/stalwartlabs/stalwart/blob/main/UPGRADING/v0_16.md) for more information on how to upgrade from previous versions.
